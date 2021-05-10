@@ -94,60 +94,71 @@ class EvalTask(Eval):
 
             # forward model
             m_out = model.step(feat)
-            m_pred = model.extract_preds(m_out, [(traj_data, False)], feat, clean_special_tokens=False)
-            m_pred = list(m_pred.values())[0]
 
-            # action prediction
-            action = m_pred['action_low']
-            if prev_image == curr_image and prev_action == action and prev_action in nav_actions and action in nav_actions and action == 'MoveAhead_25':
-                dist_action = m_out['out_action_low'][0][0].detach().cpu()
-                idx_rotateR = model.vocab['action_low'].word2index('RotateRight_90')
-                idx_rotateL = model.vocab['action_low'].word2index('RotateLeft_90')
-                action = 'RotateLeft_90' if dist_action[idx_rotateL] > dist_action[idx_rotateR] else 'RotateRight_90'
+            completed_valid_action = False
+            while not completed_valid_action:
+                m_pred = model.extract_preds(m_out, [(traj_data, False)], feat, clean_special_tokens=False)
+                m_pred = list(m_pred.values())[0]
 
-            if action == cls.STOP_TOKEN:
-                print("\tpredicted STOP")
-                break
+                # action prediction
+                action = m_pred['action_low']
+                # if prev_image == curr_image and prev_action == action and prev_action in nav_actions and action in nav_actions and action == 'MoveAhead_25':
+                #     dist_action = m_out['out_action_low'][0][0].detach().cpu()
+                #     idx_rotateR = model.vocab['action_low'].word2index('RotateRight_90')
+                #     idx_rotateL = model.vocab['action_low'].word2index('RotateLeft_90')
+                #     action = 'RotateLeft_90' if dist_action[idx_rotateL] > dist_action[idx_rotateR] else 'RotateRight_90'
 
-            # mask prediction
-            mask = None
-            if model.has_interaction(action):
-                class_dist = m_pred['action_low_mask'][0]
-                pred_class = np.argmax(class_dist)
+                if action == cls.STOP_TOKEN:
+                    print("\tpredicted STOP")
+                    break
 
-                # mask generation
-                with torch.no_grad():
-                    out = maskrcnn([to_tensor(curr_image).cuda()])[0]
-                    for k in out:
-                        out[k] = out[k].detach().cpu()
+                # mask prediction, if previously computed skip recomputing 
+                mask = None
+                if model.has_interaction(action) and mask == None:
+                    class_dist = m_pred['action_low_mask'][0]
+                    pred_class = np.argmax(class_dist)
 
-                if sum(out['labels'] == pred_class) == 0:
-                    mask = np.zeros((constants.SCREEN_WIDTH, constants.SCREEN_HEIGHT))
-                else:
-                    masks = out['masks'][out['labels'] == pred_class].detach().cpu()
-                    scores = out['scores'][out['labels'] == pred_class].detach().cpu()
+                    # mask generation
+                    with torch.no_grad():
+                        out = maskrcnn([to_tensor(curr_image).cuda()])[0]
+                        for k in out:
+                            out[k] = out[k].detach().cpu()
 
-                    # Instance selection based on the minimum distance between the prev. and cur. instance of a same class.
-                    if prev_class != pred_class:
-                        scores, indices = scores.sort(descending=True)
-                        masks = masks[indices]
-                        prev_class = pred_class
-                        prev_center = masks[0].squeeze(dim=0).nonzero().double().mean(dim=0)
+                    if sum(out['labels'] == pred_class) == 0:
+                        mask = np.zeros((constants.SCREEN_WIDTH, constants.SCREEN_HEIGHT))
                     else:
-                        cur_centers = torch.stack([m.nonzero().double().mean(dim=0) for m in masks.squeeze(dim=1)])
-                        distances = ((cur_centers - prev_center)**2).sum(dim=1)
-                        distances, indices = distances.sort()
-                        masks = masks[indices]
-                        prev_center = cur_centers[0]
+                        masks = out['masks'][out['labels'] == pred_class].detach().cpu()
+                        scores = out['scores'][out['labels'] == pred_class].detach().cpu()
 
-                    mask = np.squeeze(masks[0].numpy(), axis=0)
+                        # Instance selection based on the minimum distance between the prev. and cur. instance of a same class.
+                        if prev_class != pred_class:
+                            scores, indices = scores.sort(descending=True)
+                            masks = masks[indices]
+                            prev_class = pred_class
+                            prev_center = masks[0].squeeze(dim=0).nonzero().double().mean(dim=0)
+                        else:
+                            cur_centers = torch.stack([m.nonzero().double().mean(dim=0) for m in masks.squeeze(dim=1)])
+                            distances = ((cur_centers - prev_center)**2).sum(dim=1)
+                            distances, indices = distances.sort()
+                            masks = masks[indices]
+                            prev_center = cur_centers[0]
 
-            # print action
-            if args.debug:
-                print(action)
+                        mask = np.squeeze(masks[0].numpy(), axis=0)
+                
+                # use predicted action and mask (if available) to interact with the env
+                t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
 
-            # use predicted action and mask (if available) to interact with the env
-            t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
+                # If not using oracle or successful action exit while loop.
+                if not args.use_action_feasibility_oracle or t_success:
+                    completed_valid_action = True
+                    if args.debug:
+                        print(action)
+                # Mask out the unfeasible action, let the model pick the next best action
+                else:
+                    action_index = model.vocab['action_low'].word2index(action)
+                    m_out['out_action_low'][0][0][action_index] = float('-inf')
+                    if args.debug:
+                        print('unfeasible action', action)
 
             if not t_success:
                 fails += 1
