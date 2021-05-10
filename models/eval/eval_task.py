@@ -47,7 +47,7 @@ class EvalTask(Eval):
                 import traceback
                 traceback.print_exc()
                 print("Error: " + repr(e))
-
+            break
         # stop THOR
         env.stop()
 
@@ -146,8 +146,9 @@ class EvalTask(Eval):
                         mask = np.squeeze(masks[0].numpy(), axis=0)
                 
                 # use predicted action and mask (if available) to interact with the env
-                t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
+                t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=False)
 
+                print(t_success)
                 # If not using oracle or successful action exit while loop.
                 if not args.use_action_feasibility_oracle or t_success:
                     completed_valid_action = True
@@ -155,8 +156,10 @@ class EvalTask(Eval):
                         print(action)
                 # Mask out the unfeasible action, let the model pick the next best action
                 else:
+                    print(m_out['out_action_low'][0][0])
                     action_index = model.vocab['action_low'].word2index(action)
                     m_out['out_action_low'][0][0][action_index] = float('-inf')
+                    print(m_out['out_action_low'][0][0])
                     if args.debug:
                         print('unfeasible action', action)
 
