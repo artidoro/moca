@@ -34,6 +34,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_steps', type=int, default=400, help='max steps before episode termination')
     parser.add_argument('--max_fails', type=int, default=10, help='max API execution failures before episode termination')
     parser.add_argument('--use_action_feasibility_oracle', action='store_true', help='whether to prevent invalid actions from being performed')
+    parser.add_argument('--navigation_actions_only', action='store_true', help='navigation actions only')
 
     # eval settings
     parser.add_argument('--subgoals', type=str, help="subgoals to evaluate independently, eg:all or GotoLocation,PickupObject...", default="")
